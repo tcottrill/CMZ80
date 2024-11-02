@@ -26,26 +26,23 @@
 // 091124 LDI/R Command fixed (Increment AFTER!!) , revised all repeat commands
 // 091424 added the ability to get last opcode for the Sega vector encryption
 // 092724 Added DAA Calculation so the Marat table could be dropped
-// 092824 Removed all tables except parity and flags, made them static. Verified with Zexdoc, still issues with aloup tests but all add, sub, bit, etc calculations pass.
+// 092824 Removed all tables except parity and flags, made them static. Verified with Zexdoc, still issues with aloup tests but all add,sub,bit, etc calculations pass.
 // 092924 Regression tested code with pacman, bosconian, galaga, space invaders, omega race and sega vector games, no obvious issues found
 // 092924 Added missing mz80ClearPendingInterrupt() since I changed the interrupt handling
 // 092924 Reorganized Public and Private members
 // 093024 Moved interupt addresses back to public, added irq vector to int mode zero. Doscovered it still will not run rally x. :( 
 // 100124 Revised Mode 0 interrupt code to use the correct IRQ vector, fixes Rally X. Still needs further work for other jump/call addresses
-// 100924 Revised cpu halt handling to work properly with interleaving and cycle counts. Main loop needs a major re-org
-// Reorganized the interrupt code further. Still need to add the EI instruction delay for the interrupt.
-// 
+// 100924 Revised cpu halt handling to work properly with interleaving and count cycles. Main loop needs a major re-org
+// 101624 Added fancy shifting method to IRQ Mode Zero to get the Rst jump location. 
+// 110124 Discovered TacScan randomly resetting in level 2, very difficult to troubleshoot. 
+// 110224 Rewrote the inc, dec, bit, cp, sub, sbc and adc routines using Vedder Bruno's z80 from the c++ emulator OldSpark as a guide.
+// 110224 Now passes all Zexdoc tests. 
  
 //Most of my code verification is with:
 //[superzazu / z80](https://github.com/superzazu/z80)
 
 /*
 Notes:
-
-This is still a work in progress.!
-
-The struct definitions are moved out of the header file because I am using them across multiple CPU cores. You can move them back in if you are just using the Z80.
-
 Still Need to Fix the EI
  // "When an EI instruction is executed, any pending interrupt request
   // is not accepted until after the instruction following EI is executed."
@@ -53,11 +50,13 @@ Still Need to Fix the EI
 Not passing flag testing in ZEXDOC, every instruction flag calculation needs reviewed, I know some of them are not correct.
 Especially the LDI, LDD, CPI , etc. 
 
-Add interrupt pulse instead of just hold. Currently this has not made any difference in any game I have tested though. Might be needed in a console emulator. 
+Add interrupt pulse instead of just hold. So far everything I have tested doesn't seem to care. 
 
 Currently any undocumented behavior is not emulated. (X and Y flags and undocumented opcodes). 
 
 */
+
+
 
 
 #ifndef	_MZ80_H_
@@ -65,7 +64,7 @@ Currently any undocumented behavior is not emulated. (X and Y flags and undocume
 
 #pragma once
 
-// REMOVE below if not needed for your code. This is strictly because of my particular use case.
+// REMOVE below if not needed for your code. 
 #undef int8_t
 #undef uint8_t
 #undef int16_t
@@ -76,7 +75,7 @@ Currently any undocumented behavior is not emulated. (X and Y flags and undocume
 #undef uintptr_t
 #undef int64_t
 #undef uint64_t
-///////////////////////////////////////////// Remove to here. 
+/////////////////////////////////////////////
 
 #include <cstdint>
 #include "cpu_fw.h"
@@ -269,7 +268,7 @@ private:
 	uint8_t Dec(uint8_t bArg);
 	uint8_t Set(uint8_t bArg, int nBit);
 	uint8_t Res(uint8_t bArg, int nBit);
-	void Bit(uint8_t bArg, int nBit);
+	void Bit(uint8_t bArg, uint8_t nBit);
 	//Rotate
 	uint8_t Rlc(uint8_t bArg);
 	uint8_t Rrc(uint8_t bArg);

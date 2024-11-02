@@ -15,12 +15,13 @@
  * Original copyright (C) 1997 Edward Massey
  */
 
- //This is a rework in progress.
+ //This is a rework in progress. See z80.h for details
 
 #include "cpu_z80.h"
 #include <assert.h>
 #include "log.h"
 #include <stdlib.h>
+
 
 #pragma warning( disable : 4244) //16 bit to 8 bit port return
 
@@ -369,6 +370,7 @@ int cpu_z80::Ret1(int f)
 	}
 }
 
+// 16 bit add carry
 uint16_t cpu_z80::Adc_2(uint16_t wArg1, uint16_t wArg2)
 {
 	int q = wArg1 + wArg2 + (m_regF & C_FLAG);
@@ -376,6 +378,7 @@ uint16_t cpu_z80::Adc_2(uint16_t wArg1, uint16_t wArg2)
 	return q;
 }
 
+//16 bit sub carry
 uint16_t cpu_z80::Sbc_2(uint16_t wArg1, uint16_t wArg2)
 {
 	int q = wArg1 - wArg2 - (m_regF & C_FLAG);
@@ -386,76 +389,118 @@ uint16_t cpu_z80::Sbc_2(uint16_t wArg1, uint16_t wArg2)
 	return q;
 }
 
+// 16 bit add
 uint16_t cpu_z80::Add_2(uint16_t wArg1, uint16_t wArg2)
 {
-	int q = wArg1 + wArg2;
-	m_regF = (m_regF & (S_FLAG | Z_FLAG | V_FLAG)) | (((wArg1 ^ q ^ wArg2) & 0x1000) >> 8) | ((q >> 16) & 1);
-	return q;
+	uint32_t res = wArg1 + wArg2;
+	m_regF &= S_FLAG | Z_FLAG | V_FLAG;
+	if (res > 0xFFFF) m_regF |= C_FLAG;
+	if (((wArg1 & 0xFFF) + (wArg2 & 0xFFF)) > 0xFFF) m_regF |= H_FLAG;
+	return (res & 0xFFFF);
 }
 
+// 8 bit add
 void cpu_z80::Add_1(uint8_t bArg)
 {
-	int q = m_regA + bArg;
-	m_regF = ZSTable[q & 255] | ((q & 256) >> 8) | ((m_regA ^ q ^ bArg) & H_FLAG) | (((bArg ^ m_regA ^ 0x80) & (bArg ^ q) & 0x80) >> 5);
-	m_regA = q;
+	uint16_t tmp1 = ((m_regA + bArg));
+	m_regF = (tmp1 & 0x80);                    /* Set sign */
+	m_regF |= (tmp1 >> 8);                     /* Set Carry */
+	tmp1 &= 0xff;                              /* 8bit wrap */
+	if ((tmp1 ^ m_regA ^ bArg) & 0x10) m_regF |= H_FLAG;       /* Set Half flag */
+	if (~(m_regA ^ bArg) & (m_regA ^ m_regF) & 0x80) m_regF |= V_FLAG; /* Set VF flag  F already has sign.*/
+	if (tmp1 == 0) m_regF |= Z_FLAG;                   /* Set Zero Flag */
+//    F |= ( tmp1 &( YF | XF ));					   /* undocumented flag bits 5+3 */
+	m_regA = tmp1;
 }
 
+// 8 bit add with carry
 void cpu_z80::Adc_1(uint8_t bArg)
 {
-	int q = m_regA + bArg + (m_regF & C_FLAG);
-	m_regF = ZSTable[q & 255] | ((q & 256) >> 8) | ((m_regA ^ q ^ bArg) & H_FLAG) | (((bArg ^ m_regA ^ 0x80) & (bArg ^ q) & 0x80) >> 5);
-	m_regA = q;
+	uint16_t tmp1 = ((m_regA + bArg) + (m_regF & C_FLAG));
+	m_regF = (tmp1 & 0x80);                        /* Save sign */
+	m_regF |= ((tmp1) >> 8);                       /* Set Carry */
+	tmp1 &= 0xff;                                  /* 8bit wrap */
+	if (tmp1 == 0) m_regF |= Z_FLAG;               /* Set Zero Flag */
+	if (((m_regA ^ bArg ^ tmp1) & 0x10) != 0) m_regF |= H_FLAG; /* Set Half flag */
+	if (~(m_regA ^ bArg) & (m_regA ^ m_regF) & 0x80) m_regF |= V_FLAG;   /* Set VF flag  F already has sign.*/
+//    F |= ( tmp1 &( YF | XF ));                   /* undocumented flag bits 5+3 */
+	m_regA = tmp1;
 }
 
+// 8 bit sub
 void cpu_z80::Sub_1(uint8_t bArg)
 {
-	int q = m_regA - bArg;
-	m_regF = ZSTable[q & 255] | ((q & 256) >> 8) | N_FLAG | ((m_regA ^ q ^ bArg) & H_FLAG) | (((bArg ^ m_regA) & (m_regA ^ q) & 0x80) >> 5);
-	m_regA = q;
+	uint16_t tmp1 = (m_regA - bArg);
+	m_regF = (tmp1 & 0x80) | N_FLAG;				/* Save sign, set N flag */
+	if (tmp1 == 0) m_regF |= Z_FLAG;				/* Set Zero Flag */
+	m_regF |= (tmp1 & 0x100) >> 8;					/* Set Carry */
+	if (((bArg ^ m_regA) & (m_regA ^ tmp1) & 0x80) != 0) m_regF |= V_FLAG; /* Set overflow */
+	if (((m_regA ^ bArg ^ tmp1) & 0x10) != 0) m_regF |= H_FLAG;			   /* Set Half flag */
+	tmp1 &= 0xff;
+	//    F |= ( tmp1 &( YF | XF ));				/* undocumented flag bits 5+3 */
+	m_regA = tmp1;
 }
 
+// 8 bit sub carry
 void cpu_z80::Sbc_1(uint8_t bArg)
 {
-	int q = m_regA - bArg - (m_regF & C_FLAG);
-	m_regF = ZSTable[q & 255] | ((q & 256) >> 8) | N_FLAG | ((m_regA ^ q ^ bArg) & H_FLAG) | (((bArg ^ m_regA) & (bArg ^ q) & 0x80) >> 5);
-	m_regA = q;
+	uint16_t tmp1 = m_regA - bArg - (m_regF & C_FLAG);
+	m_regF = (tmp1 & 0x80) | N_FLAG;		/* save sign, set NF */
+	m_regF |= ((tmp1 & 0x100) >> 8);		/* save carry */
+	if (((m_regA ^ bArg ^ tmp1) & 0x10) != 0) m_regF |= H_FLAG;
+	if (((bArg ^ m_regA) & (m_regA ^ tmp1) & 0x80) != 0) m_regF |= V_FLAG;
+	tmp1 &= 0xff;
+	if (tmp1 == 0) m_regF |= Z_FLAG;
+	//    F |= ( tmp1 &( YF | XF ));		/* undocumented flag bits 5+3 */
+	m_regA = tmp1;
 }
 
-void cpu_z80::And(uint8_t bArg)
+void cpu_z80::And(uint8_t bArg) // Checked
 {
 	m_regF = ZSPTable[m_regA &= bArg] | H_FLAG;
 }
 
-void cpu_z80::Or(uint8_t bArg)
+void cpu_z80::Or(uint8_t bArg) // Checked
 {
 	m_regF = ZSPTable[m_regA |= bArg];
 }
 
-void cpu_z80::Xor(uint8_t bArg)
+void cpu_z80::Xor(uint8_t bArg) // Checked
 {
 	m_regF = ZSPTable[m_regA ^= bArg];
 }
 
 void cpu_z80::Cp(uint8_t bArg)
 {
-	int q = m_regA - bArg;
-	m_regF = ZSTable[q & 255] | ((q & 256) >> 8) | N_FLAG | ((m_regA ^ q ^ bArg) & H_FLAG) | (((bArg ^ m_regA) & (bArg ^ q) & 0x80) >> 5);
+	uint16_t tmp1 = (m_regA - bArg);
+	m_regF = (tmp1 & 0x80) | N_FLAG; /* Save sign, set N flag */
+	if (tmp1 == 0) m_regF |= Z_FLAG;     /* Set Zero Flag */
+	m_regF |= (tmp1 & 0x100) >> 8; /* Set Carry */
+	if (((bArg ^ m_regA) & (m_regA ^ tmp1) & 0x80) != 0) m_regF |= V_FLAG; /* Set overflow */
+	if (((m_regA ^ bArg ^ tmp1) & 0x10) != 0) m_regF |= H_FLAG; /* Set Half flag */
 }
 
 uint8_t cpu_z80::Inc(uint8_t bArg)
 {
-	bArg++;
-	m_regF = (m_regF & C_FLAG) | ZSTable[bArg] | ((bArg == 0x80) ? V_FLAG : 0) | ((bArg & 0x0F) ? 0 : H_FLAG);
-	return bArg;
+	bArg++;                             /* Inc value, wrap on 8 bits 	*/
+	m_regF &= C_FLAG;                   /* Clear all used flags 	*/
+	m_regF |= (bArg & 0x80);            /* Save S flag (bit sign)	*/
+	if (bArg == 0) m_regF |= Z_FLAG;    /* If v is zero Set Zero bit.	*/
+	if (bArg == 0x80) m_regF |= V_FLAG; /* Set Overflow flag		*/
+	if (!(bArg & 0xf)) m_regF |= 0x10;  /* Half flag if Carry from bit 3*/
+//    F |= ( v &( YF | XF ));           /* undocumented flag bits 5+3 */
+	return (bArg);
 }
 
 uint8_t cpu_z80::Dec(uint8_t bArg)
 {
-	m_regF = (m_regF & C_FLAG) | N_FLAG |
-		((bArg == 0x80) ? V_FLAG : 0) | ((bArg & 0x0F) ? 0 : H_FLAG);
-
-	m_regF |= ZSTable[--bArg];
-
+	bArg--;										  /* Dec value, wrap on 8 bit	*/
+	m_regF = (m_regF & C_FLAG) | N_FLAG;          /* Clear all used flags set N */
+	m_regF |= (bArg & S_FLAG);                    /* Save S flag (bit sign)	*/
+	if (bArg == 0) m_regF |= Z_FLAG;              /* If v is zero Set Zero bit.	*/
+	if (bArg == 0x7f) m_regF |= V_FLAG;           /* Set overflow flag		*/
+	if ((bArg & 0x0f) == 0x0f) m_regF |= H_FLAG;  /* Half carry 		*/
+//    m_regF |= ( v &( YF | XF ));				  /* undocumented flag bits 5+3 */
 	return bArg;
 }
 
@@ -469,41 +514,53 @@ uint8_t cpu_z80::Res(uint8_t bArg, int nBit)
 	return (bArg & ~(1 << nBit));
 }
 
-void cpu_z80::Bit(uint8_t bArg, int nBit)
+void cpu_z80::Bit(uint8_t bArg, uint8_t nBit)
 {
-	m_regF = (m_regF & C_FLAG) | H_FLAG | ((bArg & (1 << nBit)) ? ((nBit == 7) ? S_FLAG : 0) : Z_FLAG);
+	// Based on Sean Young documentation, "Z80-documented".
+	m_regF = (m_regF & C_FLAG) | H_FLAG;                       // Clear all bits except CF, HF (always set) from F.
+	if (!(bArg & (1 << nBit))) m_regF |= (Z_FLAG | V_FLAG);    // ZF is set if tested bit is reset.PF is like ZF.
+	if ((nBit == 7) && !(m_regF & Z_FLAG)) m_regF |= S_FLAG;   // if tested bit is 7 is set, set SF
+//    if(( bit == 5 ) && !( F &ZF )) F |= YF;				   // if tested bit is 5 is set, set YF UNDOC Flag
+//    if(( bit == 3 ) && !( F &ZF )) F |= XF;			       // if tested bit is 3 is set, set XF UNDOC Flag
 }
 
 uint8_t cpu_z80::Rlc(uint8_t bArg)
 {
-	int q = bArg >> 7;
-	bArg = (bArg << 1) | q;
-	m_regF = ZSPTable[bArg] | q;
-	return bArg;
+	uint8_t tmp1 = (bArg << 1);
+	m_regF = (bArg >> 7); /* All flags to zero, C = bit7 */
+	tmp1 |= (m_regF & 1);
+	m_regF |= ZSPTable[tmp1];
+	//    F |= ( tmp1 &( YF | XF )); /* undocumented flag bits 5+3 */
+	return tmp1;
 }
 
 uint8_t cpu_z80::Rrc(uint8_t bArg)
 {
-	int q = bArg & 1;
-	bArg = (bArg >> 1) | (q << 7);
-	m_regF = ZSPTable[bArg] | q;
-	return bArg;
+	uint8_t tmp1 = bArg >> 1;
+	m_regF = (bArg & 1); /* Set Carry from bit0*/
+	tmp1 |= (m_regF << 7); /* Set outgoing bit0 in bit7 */
+	m_regF |= ZSPTable[tmp1];
+	//    F |= ( tmp1 &( YF | XF )); /* undocumented flag bits 5+3 */
+	return tmp1;
 }
 
 uint8_t cpu_z80::Rl(uint8_t bArg)
 {
-	int q = bArg >> 7;
-	bArg = (bArg << 1) | (m_regF & 1);
-	m_regF = ZSPTable[bArg] | q;
-	return bArg;
+	uint8_t tmp1 = ((bArg << 1) | (m_regF & 1));
+	m_regF = bArg >> 7; /* F = bit7 */
+	m_regF |= ZSPTable[tmp1];
+	//    F |= ( tmp1 &( YF | XF )); /* undocumented flag bits 5+3 */
+	return tmp1;
 }
 
 uint8_t cpu_z80::Rr(uint8_t bArg)
 {
-	int q = bArg & 1;
-	bArg = (bArg >> 1) | (m_regF << 7);
-	m_regF = ZSPTable[bArg] | q;
-	return bArg;
+	uint8_t c = (m_regF & 1);
+	m_regF = bArg & 1;						/* bit0 -> Carry */
+	UINT8 tmp1 = (bArg >> 1) | (c << 7);	/* Old Carry -> bit7 */
+	m_regF |= ZSPTable[tmp1];
+	//    F |= ( tmp1 &( YF | XF ));		/* undocumented flag bits 5+3 */
+	return tmp1;
 }
 
 uint8_t cpu_z80::Sll(uint8_t bArg)
@@ -603,6 +660,7 @@ unsigned long int cpu_z80::mz80exec(unsigned long int cCyclesArg)
 			m_regR++;
 			cCycles -= 4;
 			previous_opcode = 0x76;
+			wrlog("In Halt");
 		}
 		else
 		{
@@ -610,6 +668,8 @@ unsigned long int cpu_z80::mz80exec(unsigned long int cCyclesArg)
 		m_regR++;
 		z80pc = GetPC(); /* for some of the platforms */
 		previous_opcode = bOpcode;
+
+		//wrlog("%04X %04X %04X %04X %04X %04X %04X %04X %04X \n",GetPC(), m_regAF, m_regBC, m_regDE, m_regHL,m_regIX, m_regIY, GetSP(), cCycles);
 
 		switch (bOpcode)
 		{
@@ -1907,6 +1967,7 @@ unsigned long int cpu_z80::mz80exec(unsigned long int cCyclesArg)
 		}
 		}
 		dwElapsedTicks += (prev_cycles - cCycles);
+		
 	}
 
 	z80pc = GetPC(); /* for some of the platforms */
@@ -1964,22 +2025,24 @@ UINT32 cpu_z80::mz80int(UINT32 bVal)
 		case 0:
 			cCycles -= 11;
 			// Subtract C7 from the Opcode to get the memory vector. 
-			Rst(irq_vector - 0xC7);
-			wrlog("Interrupt Mode 0 Taken");
+			// Or fancy shifting as seen below, the fancy way.
+			//Rst(irq_vector - 0xC7);
+			Rst(((irq_vector >> 3) & 7) << 3);
+			//wrlog("Interrupt Mode 0 Taken");
 			pending_int = 0;
 			break;
 
 		case 1:
 			cCycles -= 13;
 			Rst(z80intAddr);
-			wrlog("Interrupt Mode 1 Taken");
+			//wrlog("Interrupt Mode 1 Taken");
 			pending_int = 0;
 			break;
 
 		case 2:
 			cCycles -= 19;
 			pending_int = 0;
-			wrlog("Interrupt Mode 2 Taken");
+			//wrlog("Interrupt Mode 2 Taken");
 			Push(GetPC());
 			SetPC(MemReadWord(irq_vector | (m_regI << 8)));
 			break;
@@ -1991,7 +2054,7 @@ UINT32 cpu_z80::mz80int(UINT32 bVal)
 	}
 	else
 	{
-		pending_int = 1;        // Set Interrupt Pending.
+		pending_int = 1;                // Set Interrupt Pending.
 		return 0xffffffff;		// Interrupt not taken!
 	}
 	return(0);
