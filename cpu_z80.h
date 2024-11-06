@@ -37,7 +37,13 @@
 // 110124 Discovered TacScan randomly resetting in level 2, very difficult to troubleshoot. 
 // 110224 Rewrote the inc, dec, bit, cp, sub, sbc and adc routines using Vedder Bruno's z80 from the c++ emulator OldSpark as a guide.
 // 110224 Now passes all Zexdoc tests. 
- 
+// 110324 Fixed and issue where flags were being set on 0xdb (In A,n). This was my fault, removed the offending line of code.
+// 110424 Completely rewrote the main exec loop ala Superzazu. It's a lot cleaner to me. 
+// 110424 Added address Rbit7 save code from OldSpark EMU (Vedder Bruno)
+// 110424 Updated the Previous PC code and verified. Rewrote the Program Counter handler code, first pass. 
+// 110524 Invalidating the Previous Program counter after an interrupt, setting it to -1; and trapping it like in M.A.M.E (tm) fixed the decryption issue in Tacscan. 
+// 110524 LD A,nn Instructions after an interrupt are not decrypted. 
+// 
 //Most of my code verification is with:
 //[superzazu / z80](https://github.com/superzazu/z80)
 
@@ -64,17 +70,6 @@ Currently any undocumented behavior is not emulated. (X and Y flags and undocume
 
 #pragma once
 
-// REMOVE below if not needed for your code. 
-#undef int8_t
-#undef uint8_t
-#undef int16_t
-#undef uint16_t
-#undef int32_t
-#undef uint32_t
-#undef intptr_t
-#undef uintptr_t
-#undef int64_t
-#undef uint64_t
 /////////////////////////////////////////////
 
 #include <cstdint>
@@ -111,6 +106,7 @@ public:
 	//PC Manipulations
 	uint8_t  GetLastOpcode();
 	uint16_t GetPC();
+	uint16_t GetPPC();
 	void SetPC(uint16_t wAddr);
 	void AdjustPC(int8_t cb);
 
@@ -125,6 +121,7 @@ public:
 	UINT16  MemReadWord(UINT16 wAddr);
 
 	//Main Routines
+	unsigned mz80step();
 	unsigned long int mz80exec(unsigned long int cCyclesArg);
 	UINT32 mz80int(UINT32 bVal);
 	UINT32 mz80nmi(void);
@@ -205,14 +202,15 @@ private:
 #define m_regIYl regIY.regIYs.m_regIYl
 #define m_regIYh regIY.regIYs.m_regIYh
 
-	const uint8_t* m_rgbOpcode;		// takes place of the PC register
+	//const uint8_t* m_rgbOpcode;		// takes place of the PC register (Removed in place of actually using z80pc)
 	uint8_t* m_rgbStack;			// takes place of the SP register
 	uint8_t* m_rgbMemory;			// direct access to memory buffer (RAM)
-	const uint8_t* m_rgbOpcodeBase; // "base" pointer for m_rgbOpcode
+	//const uint8_t* m_rgbOpcodeBase; // "base" pointer for m_rgbOpcode
 	uint8_t* m_rgbStackBase;
 	int cCycles;
 
 	uint16_t z80pc;
+	uint16_t z80ppc;
 	uint8_t m_regR;
 	uint8_t m_regI;
 
@@ -223,10 +221,11 @@ private:
 
 	//New
 	int pending_int;  //TODO: Swap this with m_fPendingInterrupt
-	uint8_t previous_opcode;
 	uint8_t iff_delay;
 	// Contains the irq vector. 
 	uint16_t irq_vector; 
+	/* Use to store bit 7 of R  */
+	uint8_t Rbit7;
 
 	uint16_t m_regAF2;
 	uint16_t m_regBC2;
@@ -240,11 +239,13 @@ private:
 
 	int cpu_num;
 
+
+	unsigned exec_opcode(uint8_t bOpcode);
 	void Push(uint16_t wArg);
 	uint16_t Pop();
 	uint16_t GetSP();
 	void SetSP(uint16_t wAddr);
-	
+		
 	//Utils
 	void swap(uint16_t& b1, uint16_t& b2);
 
