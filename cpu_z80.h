@@ -1,19 +1,22 @@
-/* z80stb.c
- * Zilog Z80 processor emulator in C. Modified to be API compliant with Neil
- * Bradley's MZ80 (for ported projects)
- * Ported to 'C' by Jeff Mitchell; original copyright follows:
- *
- * Abstract:
- *   Internal declarations for Zilog Z80 emulator.
- *
- * Revisions:
- *   18-Apr-97 EAM Created
- *   ??-???-97 EAM Released in MageX 0.5
- *   26-Jul-97 EAM Fixed Time Pilot slowdown bug and
- *      Gyruss hiscore bugs (opcode 0xC3)
- *
- * Original copyright (C) 1997 Edward Massey
- */
+// -----------------------------------------------------------------------------
+// AAE (Another Arcade Emulator) - Z80 CPU Core
+//
+// This file is part of the AAE project and is released under The Unlicense.
+// You are free to use, modify, and distribute this software without restriction.
+// See <http://unlicense.org/> for details.
+//
+// Origins and Contributions:
+//   - Original Zilog Z80 emulator by Edward Massey (1997), ported to C by Jeff Mitchell.
+//   - Based on and API-compatible with Neil Bradley's MZ80 for legacy ports.
+//   - Revisions and fixes by EAM (1997), including Time Pilot and Gyruss fixes.
+//   - Modern C++ refactor, cycle-accurate execution, and additional features by TC (2015–2025)
+//     for integration with the AAE emulator.
+//   - Additional guidance and documentation provided by ChatGPT.
+//   - References and improvements adapted from OldSpark (Vedder Bruno) and Superzazu Z80.
+//
+// This version passes Zexdoc testing, supports profiling and debugging, and remains
+// compatible with MAME-derived and AAE-specific codebases while retaining accurate timing.
+// -----------------------------------------------------------------------------
 
 // Revisions continued for AAE by myself:
 
@@ -43,18 +46,21 @@
 // 110424 Updated the Previous PC code and verified. Rewrote the Program Counter handler code, first pass. 
 // 110524 Invalidating the Previous Program counter after an interrupt, setting it to -1; and trapping it like in M.A.M.E (tm) fixed the decryption issue in Tacscan. 
 // 110524 LD A,nn Instructions after an interrupt are not decrypted. 
-// 
+// 011024 Corrected R Register handling ala Superzazu
+// 062925 Corrected iff delay after EI
+// 08/24/25 Changed ImmedByte and ImmedWord to always go through handlers, this fixes memory banking.
+// corrected the cycle timing typo on LDIR , 0x16 vs 16, oops. 
+// added an RTI hook for daily chained devices and corrected RTI instruction handling.  
+// consolidated both m_fPendingInterrupt and pending_int to m_irq_line, I am still doing irq_hold only, if
+// something needs irq_strobe, I'll adjust eventually. 
+// 8/26/25 Fixed not adding the cycles taken during interrupt correctly to the cycle total. 
+// This code STILL does not meet ZexDoc for cycle counts (all functions pass), it runs over by ~38000 very frustrating and I can't find the bug.
+// 9/12/25 Finally fixed the DD and FD opcode cycle counting. Now passes all ZexDoc cycle tests, finally!!.
 //Most of my code verification is with:
 //[superzazu / z80](https://github.com/superzazu/z80)
 
 /*
 Notes:
-Still Need to Fix the EI
- // "When an EI instruction is executed, any pending interrupt request
-  // is not accepted until after the instruction following EI is executed."
-
-Not passing flag testing in ZEXDOC, every instruction flag calculation needs reviewed, I know some of them are not correct.
-Especially the LDI, LDD, CPI , etc. 
 
 Add interrupt pulse instead of just hold. So far everything I have tested doesn't seem to care. 
 
@@ -63,16 +69,26 @@ Currently any undocumented behavior is not emulated. (X and Y flags and undocume
 */
 
 
-
-
 #ifndef	_MZ80_H_
 #define	_MZ80_H_
 
 #pragma once
 
+// REMOVE below if not needed for your code. 
+#undef int8_t
+#undef uint8_t
+#undef int16_t
+#undef uint16_t
+#undef int32_t
+#undef uint32_t
+#undef intptr_t
+#undef uintptr_t
+#undef int64_t
+#undef uint64_t
 /////////////////////////////////////////////
 
 #include <cstdint>
+#include <functional>  // <-- required for std::function
 #include "cpu_fw.h"
 #include "deftypes.h"
 
@@ -92,7 +108,6 @@ class cpu_z80
 {
 public:
 
-
 	//Pointer to the handler structures
 	MemoryReadByte* z80MemoryRead = nullptr;
 	MemoryWriteByte* z80MemoryWrite = nullptr;
@@ -104,7 +119,6 @@ public:
 	uint16_t z80nmiAddr = 0x66;
 
 	//PC Manipulations
-	uint8_t  GetLastOpcode();
 	uint16_t GetPC();
 	uint16_t GetPPC();
 	void SetPC(uint16_t wAddr);
@@ -130,82 +144,83 @@ public:
 	void   mz80ReleaseTimeslice();
 	void   mz80ClearPendingInterrupt();
 	
+	std::function<void()> reti_hook;  // optional: notify external daisy-chained device on RETI
+
 	cpu_z80(uint8_t* MEM, MemoryReadByte* read_mem, MemoryWriteByte* write_mem, z80PortRead* port_read, z80PortWrite* port_write, uint16_t addr, int num);
 	~cpu_z80();
 
 private:
 
+	    union {
+			uint16_t m_regAF;
+			struct {
+				uint8_t m_regF;
+				uint8_t m_regA;
+			} regAFs;
+		} regAF;
+	#define m_regAF regAF.m_regAF
+	#define m_regF regAF.regAFs.m_regF
+	#define m_regA regAF.regAFs.m_regA
 
-	union {
-		uint16_t m_regAF;
-		struct {
-			uint8_t m_regF;
-			uint8_t m_regA;
-		} regAFs;
-	} regAF;
-#define m_regAF regAF.m_regAF
-#define m_regF regAF.regAFs.m_regF
-#define m_regA regAF.regAFs.m_regA
+		union {
+			uint16_t m_regBC;
+			struct {
+				uint8_t m_regC;
+				uint8_t m_regB;
+			} regBCs;
+		} regBC;
+	#define m_regBC regBC.m_regBC
+	#define m_regB regBC.regBCs.m_regB
+	#define m_regC regBC.regBCs.m_regC
 
-	union {
-		uint16_t m_regBC;
-		struct {
-			uint8_t m_regC;
-			uint8_t m_regB;
-		} regBCs;
-	} regBC;
-#define m_regBC regBC.m_regBC
-#define m_regB regBC.regBCs.m_regB
-#define m_regC regBC.regBCs.m_regC
+		union {
+			uint16_t m_regDE;
+			struct {
+				uint8_t m_regE;
+				uint8_t m_regD;
+			} regDEs;
+		} regDE;
+	#define m_regDE regDE.m_regDE
+	#define m_regD regDE.regDEs.m_regD
+	#define m_regE regDE.regDEs.m_regE
 
-	union {
-		uint16_t m_regDE;
-		struct {
-			uint8_t m_regE;
-			uint8_t m_regD;
-		} regDEs;
-	} regDE;
-#define m_regDE regDE.m_regDE
-#define m_regD regDE.regDEs.m_regD
-#define m_regE regDE.regDEs.m_regE
+		union {
+			uint16_t m_regHL;
+			struct {
+				uint8_t m_regL;
+				uint8_t m_regH;
+			} regHLs;
+		} regHL;
+	#define m_regHL regHL.m_regHL
+	#define m_regH regHL.regHLs.m_regH
+	#define m_regL regHL.regHLs.m_regL
 
-	union {
-		uint16_t m_regHL;
-		struct {
-			uint8_t m_regL;
-			uint8_t m_regH;
-		} regHLs;
-	} regHL;
-#define m_regHL regHL.m_regHL
-#define m_regH regHL.regHLs.m_regH
-#define m_regL regHL.regHLs.m_regL
+		union {
+			uint16_t m_regIX;
+			struct {
+				uint8_t m_regIXl;
+				uint8_t m_regIXh;
+			} regIXs;
+		} regIX;
+	#define m_regIX regIX.m_regIX
+	#define m_regIXl regIX.regIXs.m_regIXl
+	#define m_regIXh regIX.regIXs.m_regIXh
 
-	union {
-		uint16_t m_regIX;
-		struct {
-			uint8_t m_regIXl;
-			uint8_t m_regIXh;
-		} regIXs;
-	} regIX;
-#define m_regIX regIX.m_regIX
-#define m_regIXl regIX.regIXs.m_regIXl
-#define m_regIXh regIX.regIXs.m_regIXh
+		union {
+			uint16_t m_regIY;
+			struct {
+				uint8_t m_regIYl;
+				uint8_t m_regIYh;
+			} regIYs;
+		} regIY;
+	#define m_regIY regIY.m_regIY
+	#define m_regIYl regIY.regIYs.m_regIYl
+	#define m_regIYh regIY.regIYs.m_regIYh
 
-	union {
-		uint16_t m_regIY;
-		struct {
-			uint8_t m_regIYl;
-			uint8_t m_regIYh;
-		} regIYs;
-	} regIY;
-#define m_regIY regIY.m_regIY
-#define m_regIYl regIY.regIYs.m_regIYl
-#define m_regIYh regIY.regIYs.m_regIYh
 
-	//const uint8_t* m_rgbOpcode;		// takes place of the PC register (Removed in place of actually using z80pc)
+
 	uint8_t* m_rgbStack;			// takes place of the SP register
 	uint8_t* m_rgbMemory;			// direct access to memory buffer (RAM)
-	//const uint8_t* m_rgbOpcodeBase; // "base" pointer for m_rgbOpcode
 	uint8_t* m_rgbStackBase;
 	int cCycles;
 
@@ -217,15 +232,14 @@ private:
 	int m_iff1, m_iff2;
 	bool m_fHalt;
 	int m_nIM;
-	bool m_fPendingInterrupt = false;
-
-	//New
-	int pending_int;  //TODO: Swap this with m_fPendingInterrupt
+	// External INT line (level). Asserted by devices; CPU clears it when taken.
+	bool m_irq_line = false;
+	bool debug = false;
 	uint8_t iff_delay;
 	// Contains the irq vector. 
 	uint16_t irq_vector; 
 	/* Use to store bit 7 of R  */
-	uint8_t Rbit7;
+	//uint8_t Rbit7;
 
 	uint16_t m_regAF2;
 	uint16_t m_regBC2;
@@ -304,6 +318,7 @@ private:
 	void Exx();
 	int HandleCB();
 	void Daa();
+	void IncR();
 };
 
 #endif	// _MZ80_H_
